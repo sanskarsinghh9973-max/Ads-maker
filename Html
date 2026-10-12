@@ -1,0 +1,371 @@
+/*
+ ===================== ADMAKER - SINGLE FILE APP =====================
+ Is ek hi file mein backend + poora interface hai. Founder & CEO: Sanskar Singh
+
+ SETUP (local):
+   1) Is file ko admaker.mjs naam se save karo
+   2) npm init -y && npm i express jsonwebtoken bcryptjs
+   3) FFmpeg install karo (aur Noto fonts)
+   4) Neeche wale ENV variables set karo, phir:  node admaker.mjs
+
+ ENV VARIABLES (hosting dashboard mein ya .env mein):
+   JWT_SECRET=koi-lamba-random-secret
+   ANTHROPIC_API_KEY=...        CLAUDE_MODEL=claude-sonnet-5-5
+   ELEVENLABS_API_KEY=...       ELEVEN_VOICE_ID=...
+   ELEVEN_MODEL=eleven_multilingual_v2
+   RAZORPAY_KEY_ID=...  RAZORPAY_KEY_SECRET=...
+   RAZORPAY_PLAN_ID=...   (Razorpay dashboard mein Rs 99 monthly plan banao)
+   MONTHLY_LIMIT=30
+   (local .env ke liye:  node --env-file=.env admaker.mjs)
+
+ DEPLOY (Render/Railway ke liye Dockerfile - alag file mein ye 7 lines):
+   FROM node:20-slim
+   RUN apt-get update && apt-get install -y ffmpeg fonts-noto-core fontconfig && rm -rf /var/lib/apt/lists/*
+   WORKDIR /app
+   COPY . .
+   RUN npm init -y && npm i express jsonwebtoken bcryptjs
+   EXPOSE 3000
+   CMD ["node", "admaker.mjs"]
+ =====================================================================
+*/
+import express from 'express';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import fs from 'fs';
+import crypto from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const run = promisify(execFile);
+const E = process.env;
+const LIMIT = +E.MONTHLY_LIMIT || 30;
+const DB = './data/db.json';
+fs.mkdirSync('./data/videos', { recursive: true });
+const db = fs.existsSync(DB) ? JSON.parse(fs.readFileSync(DB)) : { users: [], jobs: [] };
+const save = () => fs.writeFileSync(DB, JSON.stringify(db));
+const month = () => new Date().toISOString().slice(0, 7);
+
+const PAGE = `<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AdMaker â€“ Ek prompt, poora video ad</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800&family=Noto+Sans+Devanagari:wght@500;700&display=swap">
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<style>
+:root{--bg:#0B0B1E;--card:rgba(255,255,255,.06);--line:rgba(255,255,255,.12);--txt:#F4F4FF;--mut:#A9A9C8;--ac:#7C6CFF;--ac2:#FF7A45;--ok:#2BD67B}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(900px 500px at 15% -10%,#3b2fa8 0,transparent 60%),radial-gradient(700px 500px at 100% 10%,#a8402f55 0,transparent 60%),var(--bg);color:var(--txt);font-family:'Plus Jakarta Sans','Noto Sans Devanagari',system-ui,sans-serif;min-height:100vh}
+a{color:inherit}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+nav{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:22px}
+.logo i{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--ac),var(--ac2));display:grid;place-items:center;font-style:normal}
+button{font:inherit;cursor:pointer}
+.btn{min-height:46px;padding:0 20px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--txt);font-weight:700}
+.btn.p{border:0;background:linear-gradient(135deg,var(--ac),#9a5cff);box-shadow:0 8px 30px #7c6cff55}
+.btn.o{border:0;background:linear-gradient(135deg,var(--ac2),#ff4f7b);box-shadow:0 8px 30px #ff7a4555}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.hero{text-align:center;padding:48px 0 28px}
+.hero h1{font-size:clamp(32px,6vw,60px);line-height:1.1;margin:0 0 14px;font-weight:800}
+.hero h1 span{background:linear-gradient(90deg,var(--ac),var(--ac2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{color:var(--mut);font-size:18px;max-width:620px;margin:0 auto}
+.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:20px}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:24px;backdrop-filter:blur(10px)}
+label,.lb{display:block;font-weight:700;font-size:14px;margin:16px 0 8px}
+textarea,input,select{width:100%;background:rgba(0,0,0,.35);border:1.5px solid var(--line);border-radius:14px;color:var(--txt);padding:14px;font:inherit}
+textarea{resize:none;min-height:110px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{min-height:42px;padding:0 16px;border-radius:99px;border:1.5px solid var(--line);background:transparent;color:var(--txt)}
+.chip.on{background:var(--ac);border-color:var(--ac);font-weight:700}
+.price{font-size:46px;font-weight:800}.price small{font-size:16px;color:var(--mut);font-weight:500}
+ul{padding:0;list-style:none;margin:16px 0;color:var(--mut)}li{padding:6px 0}li:before{content:"âœ“ ";color:var(--ok);font-weight:800}
+.status{display:inline-block;padding:6px 12px;border-radius:99px;font-size:13px;font-weight:700;background:#ffffff14}
+video{width:100%;max-height:520px;border-radius:16px;background:#000;margin-top:12px}
+#msg{color:#ff9b9b;font-size:14px;min-height:20px;margin-top:10px}
+dialog{border:1px solid var(--line);border-radius:20px;background:#15153a;color:var(--txt);width:min(92vw,380px);padding:24px}
+dialog::backdrop{background:#000a}
+footer{text-align:center;color:var(--mut);padding:40px 0 20px;font-size:14px}
+footer b{color:var(--txt)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+<div class="logo"><i>â–¶</i>AdMaker</div>
+<div id="navr"><button class="btn" onclick="openAuth()">Login / Signup</button></div>
+</nav>
+
+<section class="hero">
+<h1>Ek prompt. <span>Poora video ad.</span></h1>
+<p>Product batao, language chuno. Script, voiceover aur video AdMaker khud bana dega.</p>
+</section>
+
+<div class="grid">
+<div class="card">
+<span class="status" id="st">Login karo</span>
+<label for="prompt">Apne product ke baare mein likho</label>
+<textarea id="prompt">Mere handmade chai masala ka ad banao. Ghar jaisa swaad, Instagram Reels ke liye.</textarea>
+<div class="lb">Language</div>
+<div class="chips" id="lang"></div>
+<div class="lb">Format</div>
+<div class="chips" id="fmt"></div>
+<div class="lb">Length</div>
+<div class="chips" id="len"></div>
+<label for="img">Product photo (optional)</label>
+<input id="img" type="file" accept="image/*">
+<div style="margin-top:20px"><button class="btn o" id="go" style="width:100%;min-height:54px;font-size:17px" onclick="generate()">Video ad banao</button></div>
+<div id="msg"></div>
+<div id="out"></div>
+</div>
+
+<div class="card" style="align-self:start">
+<div class="lb" style="margin-top:0">AdMaker Pro</div>
+<div class="price">â‚¹99 <small>/ month</small></div>
+<ul>
+<li>Har mahine 30 AI video ads</li>
+<li>Hindi, Urdu, English, Tamil, Arabic</li>
+<li>9:16, 1:1 aur 16:9 formats</li>
+<li>Apni product photo ke saath</li>
+<li>Kabhi bhi cancel karo</li>
+</ul>
+<button class="btn p" id="sub" style="width:100%;min-height:54px;font-size:17px" onclick="subscribe()">Subscribe karo</button>
+</div>
+</div>
+
+<footer>
+<div>Founder &amp; CEO: <b>Sanskar Singh</b></div>
+<div>Â© 2026 AdMaker. Sabhi adhikaar surakshit.</div>
+</footer>
+</div>
+
+<dialog id="dlg">
+<h3 style="margin:0 0 6px" id="dt">Login</h3>
+<label for="em">Email</label><input id="em" type="email" autocomplete="email">
+<label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password">
+<div id="dm" style="color:#ff9b9b;font-size:14px;min-height:20px;margin-top:8px"></div>
+<div style="display:flex;gap:8px;margin-top:8px">
+<button class="btn p" style="flex:1" onclick="doAuth('login')">Login</button>
+<button class="btn" style="flex:1" onclick="doAuth('signup')">Signup</button>
+</div>
+<button class="btn" style="width:100%;margin-top:8px;border:0" onclick="dlg.close()">Band karo</button>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+let T = localStorage.token, ME = null, photo = null;
+const sel = { lang: 'hi', fmt: '9:16', len: 30 };
+const opts = {
+  lang: [['hi', 'à¤¹à¤¿à¤¨à¥à¤¦à¥€'], ['ur', 'Ø§Ø±Ø¯Ùˆ'], ['en', 'English'], ['ta', 'à®¤à®®à®¿à®´à¯'], ['ar', 'Ø§Ù„Ø¹Ø±Ø¨ÙŠØ©']],
+  fmt: [['9:16', '9:16 Reels'], ['1:1', '1:1'], ['16:9', '16:9']],
+  len: [[15, '15s'], [30, '30s'], [60, '60s']],
+};
+const ids = { lang: '#lang', fmt: '#fmt', len: '#len' };
+function chips() {
+  for (const k in opts) {
+    $(ids[k]).innerHTML = opts[k].map(([v, t]) => \`<button class="chip \${sel[k] == v ? 'on' : ''}" onclick="sel.\${k}=\${typeof v == 'number' ? v : \`'\${v}'\`};chips()">\${t}</button>\`).join('');
+  }
+}
+chips();
+$('#img').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  if (f.size > 8e6) { $('#msg').textContent = 'Photo 8MB se chhoti rakho'; e.target.value = ''; return; }
+  const r = new FileReader(); r.onload = () => photo = r.result; r.readAsDataURL(f);
+};
+const api = async (p, b) => {
+  const r = await fetch('/api/' + p, { method: b ? 'POST' : 'GET', headers: { 'content-type': 'application/json', ...(T ? { authorization: 'Bearer ' + T } : {}) }, body: b && JSON.stringify(b) });
+  const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Kuch galat hua'); return d;
+};
+function openAuth() { $('#dm').textContent = ''; dlg.showModal(); }
+async function doAuth(kind) {
+  try { const d = await api(kind, { email: $('#em').value, password: $('#pw').value }); T = d.token; localStorage.token = T; dlg.close(); refresh(); }
+  catch (e) { $('#dm').textContent = e.message; }
+}
+function logout() { localStorage.removeItem('token'); T = null; ME = null; refresh(); }
+async function refresh() {
+  ME = null;
+  if (T) { try { ME = await api('me'); } catch { T = null; localStorage.removeItem('token'); } }
+  $('#navr').innerHTML = ME ? \`<span style="color:var(--mut);margin-right:10px">\${ME.email}</span><button class="btn" onclick="logout()">Logout</button>\` : \`<button class="btn" onclick="openAuth()">Login / Signup</button>\`;
+  $('#st').textContent = !ME ? 'Login karo' : ME.active ? \`Pro active Â· \${ME.used}/\${ME.limit} videos\` : 'Subscription nahi hai';
+  $('#sub').textContent = ME && ME.active ? 'Pro active hai âœ“' : 'Subscribe karo';
+  $('#sub').disabled = !!(ME && ME.active);
+}
+async function subscribe() {
+  if (!ME) return openAuth();
+  try {
+    const s = await api('subscribe', {});
+    new Razorpay({
+      key: s.key, subscription_id: s.id, name: 'AdMaker', description: 'AdMaker Pro â‚¹99 / month', theme: { color: '#7C6CFF' },
+      handler: async r => { await api('verify', { payment_id: r.razorpay_payment_id, signature: r.razorpay_signature }); refresh(); },
+    }).open();
+  } catch (e) { $('#msg').textContent = e.message; }
+}
+async function generate() {
+  if (!ME) return openAuth();
+  $('#msg').textContent = ''; $('#out').innerHTML = ''; $('#go').disabled = true;
+  try {
+    const { id } = await api('generate', { prompt: $('#prompt').value, lang: sel.lang, format: sel.fmt, seconds: sel.len, image: photo });
+    for (;;) {
+      await new Promise(r => setTimeout(r, 3000));
+      const j = await api('jobs/' + id);
+      if (j.status === 'error') throw new Error(j.error);
+      if (j.status === 'done') { $('#out').innerHTML = \`<video src="\${j.url}" controls playsinline></video><p><a class="btn p" style="display:inline-grid;place-items:center;text-decoration:none" href="\${j.url}" download>Download MP4</a></p>\`; break; }
+      $('#out').innerHTML = \`<p class="status">â³ \${j.step}</p>\`;
+    }
+  } catch (e) { $('#msg').textContent = e.message; $('#out').innerHTML = ''; }
+  $('#go').disabled = false; refresh();
+}
+refresh();
+</script>
+</body>
+</html>
+`;
+
+const app = express();
+app.use(express.json({ limit: '12mb' }));
+app.get('/', (req, res) => res.type('html').send(PAGE));
+app.use('/videos', express.static('data/videos'));
+
+// ---------- Auth ----------
+const sign = u => jwt.sign({ id: u.id }, E.JWT_SECRET, { expiresIn: '30d' });
+const auth = (req, res, next) => {
+  try {
+    const { id } = jwt.verify((req.headers.authorization || '').slice(7), E.JWT_SECRET);
+    req.user = db.users.find(u => u.id === id);
+    if (!req.user) throw new Error();
+    next();
+  } catch { res.status(401).json({ error: 'Pehle login karo' }); }
+};
+
+app.post('/api/signup', async (req, res) => {
+  const { email = '', password = '', name = '' } = req.body;
+  if (!email.includes('@') || password.length < 6) return res.status(400).json({ error: 'Sahi email aur 6+ character ka password daalo' });
+  if (db.users.some(u => u.email === email.toLowerCase())) return res.status(409).json({ error: 'Ye email pehle se registered hai' });
+  const u = { id: crypto.randomUUID(), name, email: email.toLowerCase(), hash: await bcrypt.hash(password, 10), sub: null, pending: null, usage: {} };
+  db.users.push(u); save();
+  res.json({ token: sign(u) });
+});
+
+app.post('/api/login', async (req, res) => {
+  const u = db.users.find(x => x.email === (req.body.email || '').toLowerCase());
+  if (!u || !(await bcrypt.compare(req.body.password || '', u.hash))) return res.status(401).json({ error: 'Email ya password galat hai' });
+  res.json({ token: sign(u) });
+});
+
+// ---------- Razorpay subscription (Rs 99 / month plan) ----------
+const rz = (path, method = 'GET', body) =>
+  fetch('https://api.razorpay.com/v1' + path, {
+    method,
+    headers: { Authorization: 'Basic ' + Buffer.from(`${E.RAZORPAY_KEY_ID}:${E.RAZORPAY_KEY_SECRET}`).toString('base64'), 'Content-Type': 'application/json' },
+    body: body && JSON.stringify(body),
+  }).then(r => r.json());
+
+const isActive = async u => (u.sub ? (await rz('/subscriptions/' + u.sub)).status === 'active' : false);
+
+app.get('/api/me', auth, async (req, res) => {
+  const u = req.user;
+  res.json({ email: u.email, active: await isActive(u), used: u.usage[month()] || 0, limit: LIMIT });
+});
+
+app.post('/api/subscribe', auth, async (req, res) => {
+  const s = await rz('/subscriptions', 'POST', { plan_id: E.RAZORPAY_PLAN_ID, total_count: 120, customer_notify: 1 });
+  if (!s.id) return res.status(500).json({ error: s.error?.description || 'Razorpay error' });
+  req.user.pending = s.id; save();
+  res.json({ id: s.id, key: E.RAZORPAY_KEY_ID });
+});
+
+app.post('/api/verify', auth, (req, res) => {
+  const { payment_id, signature } = req.body;
+  const expected = crypto.createHmac('sha256', E.RAZORPAY_KEY_SECRET).update(`${payment_id}|${req.user.pending}`).digest('hex');
+  if (!req.user.pending || expected !== signature) return res.status(400).json({ error: 'Payment verify nahi hua' });
+  req.user.sub = req.user.pending; save();
+  res.json({ ok: true });
+});
+
+// ---------- Video generation ----------
+const LANGS = {
+  hi: ['Hindi', 'Noto Sans Devanagari'], ur: ['Urdu', 'Noto Naskh Arabic'], en: ['English', 'Noto Sans'],
+  ta: ['Tamil', 'Noto Sans Tamil'], ar: ['Arabic', 'Noto Naskh Arabic'],
+};
+const SIZES = { '9:16': [1080, 1920], '1:1': [1080, 1080], '16:9': [1920, 1080] };
+
+const wrap = t => {
+  let line = '', out = [];
+  for (const w of t.split(' ')) {
+    if ((line + ' ' + w).trim().length > 22) { out.push(line); line = w; } else line = (line + ' ' + w).trim();
+  }
+  out.push(line);
+  return out.join('\n');
+};
+
+app.post('/api/generate', auth, async (req, res) => {
+  const u = req.user;
+  if (!(await isActive(u))) return res.status(402).json({ error: 'Pehle â‚¹99/month subscription lo' });
+  if ((u.usage[month()] || 0) >= LIMIT) return res.status(429).json({ error: 'Is mahine ki video limit poori ho gayi' });
+  const { prompt, lang = 'hi', format = '9:16', seconds = 30, image } = req.body;
+  if (!prompt || !LANGS[lang] || !SIZES[format]) return res.status(400).json({ error: 'Prompt, language ya format galat hai' });
+  u.usage[month()] = (u.usage[month()] || 0) + 1;
+  const job = { id: crypto.randomUUID(), user: u.id, status: 'queued', step: 'Line mein hai' };
+  db.jobs.push(job); save();
+  res.json({ id: job.id });
+  make(job, { prompt, lang, format, seconds: Math.min(+seconds || 30, 60), image }).catch(e => {
+    job.status = 'error'; job.error = e.message; u.usage[month()]--; save();
+  });
+});
+
+app.get('/api/jobs/:id', auth, (req, res) => {
+  const j = db.jobs.find(x => x.id === req.params.id && x.user === req.user.id);
+  j ? res.json(j) : res.status(404).json({ error: 'Job nahi mila' });
+});
+
+async function make(job, { prompt, lang, format, seconds, image }) {
+  const dir = `data/tmp/${job.id}`;
+  fs.mkdirSync(dir, { recursive: true });
+  const step = s => { job.status = 'running'; job.step = s; save(); };
+  const [W, H] = SIZES[format];
+  const font = LANGS[lang][1];
+
+  step('Script likh raha hunâ€¦');
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': E.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: E.CLAUDE_MODEL || 'claude-sonnet-5-5', max_tokens: 1500,
+      messages: [{ role: 'user', content: `Write a ${seconds}-second video ad script in ${LANGS[lang][0]} for: ${prompt}\nReturn ONLY JSON: {"scenes":[{"text":"one short spoken line, max 14 words","color":"#hex dark background"}]} with 4-6 scenes. Natural native speech, persuasive, no false claims.` }],
+    }),
+  }).then(x => x.json());
+  if (r.error) throw new Error(r.error.message);
+  const txt = r.content[0].text;
+  const scenes = JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}') + 1)).scenes;
+
+  if (image) fs.writeFileSync(`${dir}/img.jpg`, Buffer.from(image.split(',')[1], 'base64'));
+  const list = [];
+  for (const [i, s] of scenes.entries()) {
+    step(`Scene ${i + 1}/${scenes.length} ban raha haiâ€¦`);
+    const a = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${E.ELEVEN_VOICE_ID}`, {
+      method: 'POST',
+      headers: { 'xi-api-key': E.ELEVENLABS_API_KEY, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: s.text, model_id: E.ELEVEN_MODEL || 'eleven_multilingual_v2' }),
+    });
+    if (!a.ok) throw new Error('Voiceover fail hui: ' + a.status);
+    fs.writeFileSync(`${dir}/a${i}.mp3`, Buffer.from(await a.arrayBuffer()));
+    fs.writeFileSync(`${dir}/t${i}.txt`, wrap(s.text));
+    const input = image ? ['-loop', '1', '-i', `${dir}/img.jpg`]
+      : ['-f', 'lavfi', '-i', `color=c=${(s.color || '#1b1b3a').replace('#', '0x')}:s=${W}x${H}`];
+    const vf = (image ? `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},` : '') +
+      `drawtext=font='${font}':textfile=${dir}/t${i}.txt:fontcolor=white:fontsize=${Math.round(W / 20)}:line_spacing=12:x=(w-text_w)/2:y=h*0.7:box=1:boxcolor=black@0.55:boxborderw=24`;
+    await run('ffmpeg', ['-y', ...input, '-i', `${dir}/a${i}.mp3`, '-vf', vf, '-r', '30', '-shortest',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', `${dir}/s${i}.mp4`]);
+    list.push(`file 's${i}.mp4'`);
+  }
+
+  step('Final video jod raha hunâ€¦');
+  fs.writeFileSync(`${dir}/list.txt`, list.join('\n'));
+  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', `${dir}/list.txt`, '-c', 'copy', `data/videos/${job.id}.mp4`]);
+  fs.rmSync(dir, { recursive: true, force: true });
+  job.status = 'done'; job.url = `/videos/${job.id}.mp4`; save();
+}
+
+app.listen(E.PORT || 3000, () => console.log('AdMaker chal raha hai: http://localhost:' + (E.PORT || 3000)));
